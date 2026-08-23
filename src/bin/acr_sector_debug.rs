@@ -74,4 +74,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         last_completed = lap;
         lap_start = i + 1;
     }
+
+    Ok(())
 }
