@@ -20,7 +20,6 @@ jobs:
       - name: Restore known-good reporter and patch sectors
         shell: python
         run: |
-          import re
           import subprocess
           from pathlib import Path
 
@@ -28,7 +27,16 @@ jobs:
           subprocess.run(['git', 'checkout', '96454d4', '--', str(path)], check=True)
           text = path.read_text(encoding='utf-8')
 
-          replacement = r'''fn extract_lap_sectors(
+          # Replace only the sector extraction function. Keep the complete
+          # known-good reporter, including main(), intact.
+          start_marker = 'fn extract_lap_sectors('
+          end_marker = '\nfn event_points('
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('Could not locate extract_lap_sectors() boundaries')
+
+          replacement = '''fn extract_lap_sectors(
               gfx: &[acr_recorder::record::GraphicsRecord],
               start: usize,
               end: usize,
@@ -67,8 +75,8 @@ jobs:
               if let (Some(s1), Some(s2)) = (cumulative_s1, cumulative_s2) {
                   sectors[1] = Some((s2 - s1).max(0.0));
                   // Use the authoritative completed-lap time already parsed
-                  // from the Graphics lap boundary. Do NOT read gfx[end].last_time_str
-                  // here: that field is not a reliable per-lap time reference.
+                  // from the Graphics lap boundary. Do not read
+                  // gfx[end].last_time_str here.
                   sectors[2] = Some((lap_time_sec - s2).max(0.0));
               }
 
@@ -77,32 +85,29 @@ jobs:
 
 '''
 
-          pattern = r'fn extract_lap_sectors\(.*?\n\}\n\nfn event_points\('
-          new_text, count = re.subn(pattern, replacement + 'fn event_points(', text, count=1, flags=re.S)
-          if count != 1:
-              raise SystemExit('Could not locate extract_lap_sectors()')
+          text = text[:start] + replacement + text[end + 1:]
 
-          # Pass the already parsed authoritative lap time into sector extraction.
-          call_pattern = r'extract_lap_sectors\(\s*&gfx,\s*lap\.gfx_start,\s*lap\.gfx_end\s*\)'
-          new_text, call_count = re.subn(
-              call_pattern,
-              'extract_lap_sectors(&gfx, lap.gfx_start, lap.gfx_end, lap.time_sec)',
-              new_text,
-              count=1,
-          )
-          if call_count != 1:
+          # Pass the authoritative Lap.time_sec into the extractor.
+          old_call = 'extract_lap_sectors(&gfx, lap.gfx_start, lap.gfx_end)'
+          new_call = 'extract_lap_sectors(&gfx, lap.gfx_start, lap.gfx_end, lap.time_sec)'
+          if old_call not in text:
               raise SystemExit('Could not locate extract_lap_sectors() call site')
+          text = text.replace(old_call, new_call, 1)
 
-          path.write_text(new_text, encoding='utf-8', newline='\n')
+          path.write_text(text, encoding='utf-8', newline='\n')
+
+          # Hard safety check: the restored reporter must still contain main().
+          if 'fn main() -> Result<(), Box<dyn std::error::Error>>' not in text:
+              raise SystemExit('Safety check failed: main() missing after patch')
 
       - name: Validate Rust source
         run: cargo check --bin acr_session_report
 
-      - name: Commit fix
+      - name: Commit fixed reporter
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/bin/acr_session_report.rs .github/workflows/fix-sector.yml
           git diff --cached --quiet && exit 0
-          git commit -m "Fix S3 from completed lap time [sector-fix]"
+          git commit -m "Restore reporter and fix S3 [sector-fix]"
           git push origin main
