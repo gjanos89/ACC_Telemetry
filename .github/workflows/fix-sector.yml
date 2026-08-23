@@ -24,9 +24,9 @@ jobs:
           from pathlib import Path
 
           path = Path('src/bin/acr_session_report.rs')
-          # 2c6ed87 is the last known-good complete reporter: it contains
+          # ca9a896 is the known-good complete reporter: it contains
           # main() and uses PhysicsRecord.gas (not the obsolete throttle field).
-          subprocess.run(['git', 'checkout', '2c6ed87', '--', str(path)], check=True)
+          subprocess.run(['git', 'checkout', 'ca9a896aae98e51fda51fe8fee406c62b5f37e09', '--', str(path)], check=True)
           text = path.read_text(encoding='utf-8')
 
           # Replace only the sector extraction function. Keep the complete
