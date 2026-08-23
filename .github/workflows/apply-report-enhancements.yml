@@ -1,0 +1,149 @@
+name: Apply report enhancements
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  update-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Update reporter and template
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          rust = Path('src/bin/acr_session_report.rs')
+          text = rust.read_text(encoding='utf-8')
+
+          helper = r'''
+fn recording_start_stamp(physics: &Path) -> Option<String> {
+    let stem = physics.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let notes = physics.parent().unwrap_or_else(|| Path::new(".")).join(
+        format!("{stem}.notes.json")
+    );
+    let raw = fs::read_to_string(notes).ok()?;
+    let root: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let start = root.get("recording_start_utc")?.as_str()?;
+    let dt = chrono::DateTime::parse_from_rfc3339(start).ok()?;
+    Some(dt.format("%Y-%m-%d_%H-%M").to_string())
+}
+
+fn file_component(s: &str) -> String {
+    let cleaned = clean_label(s);
+    let mut out = String::with_capacity(cleaned.len());
+    for c in cleaned.chars() {
+        if c.is_ascii_alphanumeric() || c == ' ' || c == '_' || c == '-' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+'''
+
+          marker = 'fn find_string(v: &serde_json::Value, wanted: &[&str]) -> Option<String> {'
+          if 'fn recording_start_stamp(' not in text:
+              text = text.replace(marker, helper + '\n' + marker, 1)
+
+          old_out = '''    let out = env::args().nth(2).map(PathBuf::from).unwrap_or_else(|| {
+        physics.parent().unwrap_or_else(|| Path::new("."))
+            .join(format!("{}_report.html",
+                physics.file_stem().and_then(|s| s.to_str()).unwrap_or("session")))
+    });'''
+          new_out = '''    let requested_out = env::args().nth(2).map(PathBuf::from);'''
+          if old_out not in text:
+              raise SystemExit('Expected output-path block not found')
+          text = text.replace(old_out, new_out, 1)
+
+          meta_marker = '''    let (track_name, car_name) = read_metadata(&physics);
+    eprintln!("Track: {}", track_name);
+    eprintln!("Car: {}", car_name);'''
+          meta_insert = '''    let (track_name, car_name) = read_metadata(&physics);
+    eprintln!("Track: {}", track_name);
+    eprintln!("Car: {}", car_name);
+
+    let out = requested_out.unwrap_or_else(|| {
+        let stamp = recording_start_stamp(&physics).unwrap_or_else(|| "unknown-time".into());
+        let filename = format!("{}_{}_{}_report.html", file_component(&car_name), file_component(&track_name), stamp);
+        physics.parent().unwrap_or_else(|| Path::new(".")).join(filename)
+    });'''
+          if meta_marker not in text:
+              raise SystemExit('Expected metadata block not found')
+          text = text.replace(meta_marker, meta_insert, 1)
+
+          theoretical_marker = '''    for lap in &mut lap_json {
+        if let Some(sectors) = lap["sectors"].as_array_mut() {'''
+          theoretical_insert = '''    let theoretical_best_sec = if best_sector_sec.iter().all(|t| t.is_finite()) {
+        Some(best_sector_sec.iter().sum::<f64>())
+    } else {
+        None
+    };
+
+    for lap in &mut lap_json {
+        if let Some(sectors) = lap["sectors"].as_array_mut() {'''
+          if theoretical_marker not in text:
+              raise SystemExit('Expected sector-best loop not found')
+          text = text.replace(theoretical_marker, theoretical_insert, 1)
+
+          data_marker = '''        "session_best_sectors": best_sector_sec.iter().map(|t| if t.is_finite() { json!({"time_sec": t, "time": fmt_sec(*t)}) } else { json!(null) }).collect::<Vec<_>>(),'''
+          data_insert = '''        "session_best_sectors": best_sector_sec.iter().map(|t| if t.is_finite() { json!({"time_sec": t, "time": fmt_sec(*t)}) } else { json!(null) }).collect::<Vec<_>>(),
+        "theoretical_best_sec": theoretical_best_sec,
+        "theoretical_best_time": theoretical_best_sec.map(fmt_sec),'''
+          if data_marker not in text:
+              raise SystemExit('Expected session-best JSON field not found')
+          text = text.replace(data_marker, data_insert, 1)
+
+          rust.write_text(text, encoding='utf-8')
+
+          html = Path('src/report/template.html')
+          h = html.read_text(encoding='utf-8')
+          card_marker = ''' `<div class="card">Best<b>${D.best_time}</b></div>`+'''
+          card_insert = ''' `<div class="card">Best<b>${D.best_time}</b></div>`+\n `<div class="card">Theoretical best<b>${D.theoretical_best_time||'—'}</b></div>`+'''
+          if 'Theoretical best' not in h:
+              if card_marker not in h:
+                  raise SystemExit('Expected cards block not found')
+              h = h.replace(card_marker, card_insert, 1)
+
+          sector_marker = '''<div class="panel"><h2>Session best sectors</h2><div class="summary" id="sectorSummary"></div></div>'''
+          sector_insert = '''<div class="panel"><h2>Session best sectors</h2><div class="summary" id="sectorSummary"></div></div>
+<div class="panel"><h2>Theoretical best lap</h2><div class="summary" id="theoreticalSummary"></div></div>'''
+          if 'id="theoreticalSummary"' not in h:
+              if sector_marker not in h:
+                  raise SystemExit('Expected sector summary block not found')
+              h = h.replace(sector_marker, sector_insert, 1)
+
+          js_marker = '''if(!ss.innerHTML)ss.innerHTML=metric('Sectors','—');
+const pr=document.getElementById('prSummary');'''
+          js_insert = '''if(!ss.innerHTML)ss.innerHTML=metric('Sectors','—');
+const theoretical=document.getElementById('theoreticalSummary');
+theoretical.innerHTML=metric('Theoretical best',D.theoretical_best_time||'—');
+const pr=document.getElementById('prSummary');'''
+          if 'const theoretical=document.getElementById' not in h:
+              if js_marker not in h:
+                  raise SystemExit('Expected sector summary JS block not found')
+              h = h.replace(js_marker, js_insert, 1)
+
+          html.write_text(h, encoding='utf-8')
+      - name: Commit changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/apply-report-enhancements.yml
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git add src/bin/acr_session_report.rs src/report/template.html .github/workflows/apply-report-enhancements.yml
+          git commit -m "Add descriptive report filenames and theoretical best lap"
+          git push
