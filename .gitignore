@@ -1,58 +1,8 @@
-# Build
-/target
-/secret
-**/target
-install/staging/
-
-# Private game-clock mod Lua (not for public repo — backup under secret/)
-install/external_timing_provider/Mods/game_clock_mod/Scripts/main.lua
-
-# SimHub plugin build output
-simhub/User.AcrGameClock/bin/
-simhub/User.AcrGameClock/obj/
-
-/acr_telemetry_bridge_0.1-bin/
-# User config (paths)
-
-/target/
-# Recordings & user data
-/telemetry_raw/
-*.db
-*.db.bak
-timing/timing.db-wal
-timing/timing.db-shm
-timing/runs/
-/grafanimate/
+target/
+sessions/
 *.rkyv
-acc_physics_*.csv
-acc_physics_*.json
-acc_physics_*.ld
-acc_physics_*.noquote.csv
-
-# Archives
-*.zip
-
-# Binary distribution (optional)
-acr_telemetry_0.1-bin/
-acr-bin/
-
-# bin/ = symlinks to target/release (create with setup_bin_links.bat)
-/bin/acr_export.exe
-/bin/acr_recorder.exe
-/bin/acr_recorder.toml.example
-/bin/acr_telemetry_bridge.exe
-/bin/acr_telemetry_bridge.toml
-
-# Vendored reference repos (local clone; see vendor/PacenotePal)
-/vendor/PacenotePal/
-
-# Local archives
-/archive/
-/v0.1/
-acr_recorder.exe.01
-acr_telemetry_bridge_0.1-bin/acr_telemetry_bridge.toml
-acr_telemetry_bridge_0.1-bin/telemetry_color.toml
-
-grafana/aktuelles_auswahldash.json
-grafana/Performance variables-1772042665778.json
-grafana/unfinished_Performance-dashboard.json
+*.csv
+*.log
+*.html
+.vscode/
+.idea/
