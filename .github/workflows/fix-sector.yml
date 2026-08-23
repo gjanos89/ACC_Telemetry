@@ -1,437 +1,49 @@
-name: Fix sector extraction
+name: fix-sector
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   fix:
-    if: "!contains(github.event.head_commit.message, '[sector-fix]')"
+    if: ${{ !contains(github.event.head_commit.message, '[sector-fix]') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Restore known-good reporter and patch sectors + telemetry alignment
+      - name: Patch reporter
         shell: python
         run: |
-          import subprocess
           from pathlib import Path
-
+          import subprocess
           path = Path('src/bin/acr_session_report.rs')
-          # ca9a896 is the known-good complete reporter: it contains
-          # main() and uses PhysicsRecord.gas (not the obsolete throttle field).
-          subprocess.run(['git', 'checkout', 'ca9a896aae98e51fda51fe8fee406c62b5f37e09', '--', str(path)], check=True)
+          subprocess.run(['git','checkout','ca9a896aae98e51fda51fe8fee406c62b5f37e09','--',str(path)], check=True)
           text = path.read_text(encoding='utf-8')
+          if 'fn main(' not in text:
+              raise SystemExit('known-good reporter does not contain main()')
+          # Keep the known-good reporter intact here. Sector correctness and
+          # telemetry alignment are handled in a separate, validated patch.
+          path.write_text(text, encoding='utf-8')
 
-          # ------------------------------------------------------------
-          # Sector extraction: ACC last_sector_time is cumulative at the
-          # sector boundary. S3 must use the authoritative lap time.
-          # ------------------------------------------------------------
-          start_marker = 'fn extract_lap_sectors('
-          end_marker = '\nfn event_points('
-          start = text.find(start_marker)
-          end = text.find(end_marker, start)
-          if start < 0 or end < 0:
-              raise SystemExit('Could not locate extract_lap_sectors() boundaries')
+      - name: Validate reporter
+        run: |
+          cargo fmt --check -- src/bin/acr_session_report.rs
+          cargo check --release --bin acr_session_report
 
-          replacement = '''fn extract_lap_sectors(
-              gfx: &[acr_recorder::record::GraphicsRecord],
-              start: usize,
-              end: usize,
-              lap_time_sec: f64,
-          ) -> Vec<Option<f64>> {
-              let mut sectors = vec![None, None, None];
-              if gfx.is_empty() || start >= gfx.len() || end <= start {
-                  return sectors;
-              }
-
-              let end = end.min(gfx.len() - 1);
-              let mut previous = gfx[start].current_sector_index;
-              let mut cumulative_s1: Option<f64> = None;
-              let mut cumulative_s2: Option<f64> = None;
-
-              for i in (start + 1)..=end {
-                  let current = gfx[i].current_sector_index;
-                  if current != previous {
-                      if let Some(t) = sector_time_sec(&gfx[i]) {
-                          match previous {
-                              0 => cumulative_s1 = Some(t),
-                              1 => cumulative_s2 = Some(t),
-                              _ => {}
-                          }
-                      }
-                      previous = current;
-                  }
-              }
-
-              if let Some(s1) = cumulative_s1 {
-                  sectors[0] = Some(s1);
-              }
-
-              if let (Some(s1), Some(s2)) = (cumulative_s1, cumulative_s2) {
-                  sectors[1] = Some((s2 - s1).max(0.0));
-                  sectors[2] = Some((lap_time_sec - s2).max(0.0));
-              }
-
-              sectors
-          }
-
-          text = text[:start] + replacement + text[end:]
-          old_call = 'extract_lap_sectors(&gfx, lap.gfx_start, lap.gfx_end)'
-          new_call = 'extract_lap_sectors(&gfx, lap.gfx_start, lap.gfx_end, lap.time_sec)'
-          if old_call not in text:
-              raise SystemExit('Could not locate extract_lap_sectors() call site')
-          text = text.replace(old_call, new_call, 1)
-
-          # ------------------------------------------------------------
-          # Telemetry alignment.
-          #
-          # Do NOT fit Graphics distance to Physics over the whole session.
-          # Graphics distance can reset in/around the pit lane. The CSV
-          # analysis showed that the reliable common reference is:
-          #   1) find Physics time of the first real lap start by matching
-          #      the first Graphics lap-start distance;
-          #   2) advance Physics lap starts by the authoritative Graphics
-          #      lap times;
-          #   3) map each Physics sample to the corresponding Graphics lap
-          #      by normalized time inside THAT lap only.
-          #
-          # This guarantees that telem for Lap N cannot contain samples from
-          # another lap and also survives the pit-lane distance reset.
-          # ------------------------------------------------------------
-          start_marker = 'fn physics_distance_cum('
-          end_marker = '\nfn find_lap_start_gfx('
-          start = text.find(start_marker)
-          end = text.find(end_marker, start)
-          if start < 0 or end < 0:
-              raise SystemExit('Could not locate old telemetry alignment helpers')
-
-          replacement = '''fn physics_distance_cum(
-              physics: &[acr_recorder::record::PhysicsRecord],
-          ) -> Vec<f64> {
-              let mut out = Vec::with_capacity(physics.len());
-              if physics.is_empty() {
-                  return out;
-              }
-
-              let mut d = 0.0;
-              out.push(0.0);
-              for i in 1..physics.len() {
-                  let dt = (physics[i].capture_time_sec - physics[i - 1].capture_time_sec)
-                      .clamp(0.0, 0.1);
-                  let v0 = physics[i - 1].speed_kmh.max(0.0) as f64 / 3.6;
-                  let v1 = physics[i].speed_kmh.max(0.0) as f64 / 3.6;
-                  d += 0.5 * (v0 + v1) * dt;
-                  out.push(d);
-              }
-              out
-          }
-
-          fn nearest_distance_index(dist: &[f64], target: f64) -> usize {
-              if dist.is_empty() { return 0; }
-              let mut lo = 0usize;
-              let mut hi = dist.len();
-              while lo < hi {
-                  let mid = lo + (hi - lo) / 2;
-                  if dist[mid] < target { lo = mid + 1; } else { hi = mid; }
-              }
-              if lo == 0 { return 0; }
-              if lo >= dist.len() { return dist.len() - 1; }
-              if (dist[lo] - target).abs() < (dist[lo - 1] - target).abs() { lo } else { lo - 1 }
-          }
-
-          fn gfx_index_for_lap_time(
-              lap: &Lap,
-              physics_time: f64,
-              physics_lap_start: f64,
-              gfx_len: usize,
-          ) -> usize {
-              if gfx_len == 0 || lap.gfx_end <= lap.gfx_start || lap.time_sec <= 0.0 {
-                  return lap.gfx_start.min(gfx_len.saturating_sub(1));
-              }
-              let frac = ((physics_time - physics_lap_start) / lap.time_sec).clamp(0.0, 1.0);
-              (lap.gfx_start as f64 + frac * (lap.gfx_end - lap.gfx_start) as f64)
-                  .round()
-                  .clamp(0.0, (gfx_len - 1) as f64) as usize
-          }
-
-          fn estimate_track_length(
-              gfx: &[acr_recorder::record::GraphicsRecord],
-              laps: &[Lap],
-          ) -> f64 {
-              let mut lengths = Vec::new();
-              for lap in laps {
-                  let d0 = gfx[lap.gfx_start].distance_traveled as f64;
-                  let d1 = gfx[lap.gfx_end].distance_traveled as f64;
-                  let d = d1 - d0;
-                  if d > 5000.0 && d < 7000.0 {
-                      lengths.push(d);
-                  }
-              }
-              if lengths.is_empty() {
-                  return 5760.0;
-              }
-              lengths.sort_by(|a,b| a.partial_cmp(b).unwrap());
-              lengths[lengths.len() / 2]
-          }
-
-          fn lap_distance(
-              g: &acr_recorder::record::GraphicsRecord,
-              track_length: f64,
-          ) -> f64 {
-              (g.normalized_car_position as f64 * track_length).clamp(0.0, track_length)
-          }
-
-          fn physics_start_for_first_lap(
-              physics: &[acr_recorder::record::PhysicsRecord],
-              physics_dist: &[f64],
-              gfx: &[acr_recorder::record::GraphicsRecord],
-              lap: &Lap,
-          ) -> usize {
-              let target = gfx[lap.gfx_start].distance_traveled as f64;
-              nearest_distance_index(physics_dist, target)
-          }
-
-          '''
-          text = text[:start] + replacement + text[end:]
-
-          # Replace event mapping with the same per-lap time mapping used by
-          # the telemetry plot. This prevents event markers from drifting to
-          # another lap as well.
-          start_marker = 'fn event_points('
-          end_marker = '\nfn best_ever_db_path('
-          start = text.find(start_marker)
-          end = text.find(end_marker, start)
-          if start < 0 or end < 0:
-              raise SystemExit('Could not locate event_points() boundaries')
-
-          replacement = '''fn event_points(
-              selected: &[&acr_recorder::record::PhysicsRecord],
-              gfx: &[acr_recorder::record::GraphicsRecord],
-              lap: &Lap,
-              lap_start_physics_time: f64,
-              track_length: f64,
-              track_name: &str,
-          ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-              let mut brakes = Vec::new();
-              let mut throttles = Vec::new();
-              let mut prev_brake = 0.0f32;
-              let mut prev_gas = 0.0f32;
-              let mut last_brake_dist = -10_000.0f64;
-              let mut last_throttle_dist = -10_000.0f64;
-
-              for r in selected {
-                  let gi = gfx_index_for_lap_time(lap, r.capture_time_sec, lap_start_physics_time, gfx.len());
-                  let g = &gfx[gi];
-                  let progress = (g.normalized_car_position as f64 * 100.0).clamp(0.0, 100.0);
-                  let dist = lap_distance(g, track_length);
-                  let event_time = (r.capture_time_sec - lap_start_physics_time)
-                      .clamp(0.0, lap.time_sec.max(0.0));
-
-                  if r.brake >= 0.10 && prev_brake < 0.05 && dist - last_brake_dist >= 80.0 {
-                      let corner = monza_brake_corner(brakes.len(), track_name);
-                      if !track_name.to_lowercase().contains("monza") || corner.is_some() {
-                          brakes.push(json!({
-                              "corner": corner,
-                              "progress": progress,
-                              "distance": dist,
-                              "time": event_time,
-                              "speed": r.speed_kmh
-                          }));
-                          last_brake_dist = dist;
-                      }
-                  }
-
-                  if !brakes.is_empty() && r.gas >= 0.50 && prev_gas < 0.20 && dist - last_throttle_dist >= 80.0 {
-                      let corner = nearest_brake_corner(progress, &brakes);
-                      throttles.push(json!({
-                          "corner": corner,
-                          "progress": progress,
-                          "distance": dist,
-                          "time": event_time,
-                          "speed": r.speed_kmh
-                      }));
-                      last_throttle_dist = dist;
-                  }
-
-                  prev_brake = r.brake;
-                  prev_gas = r.gas;
-              }
-
-              (brakes, throttles)
-          }
-          '''
-          text = text[:start] + replacement + text[end:]
-
-          # Replace the old global distance-fit setup with a per-lap Physics
-          # timeline derived from the authoritative Graphics lap times.
-          old_start = '    // Physics and Graphics do not share packet-id/time axes.'
-          old_end = '    let best_idx = laps.iter().enumerate()'
-          start = text.find(old_start)
-          end = text.find(old_end, start)
-          if start < 0 or end < 0:
-              raise SystemExit('Could not locate old main alignment block')
-
-          replacement = '''    // Build the Physics timeline from the real lap boundaries.
-          // The first lap start is anchored by the shared integrated distance;
-          // every following lap start is advanced by the authoritative Graphics
-          // lap time. This remains valid even when Graphics distance resets in pit lane.
-          let physics_dist = physics_distance_cum(&physics_records);
-          let first_physics_start_idx = physics_start_for_first_lap(
-              &physics_records,
-              &physics_dist,
-              &gfx,
-              &laps[0],
-          );
-          let first_physics_start_time = physics_records[first_physics_start_idx].capture_time_sec;
-          let track_length = estimate_track_length(&gfx, &laps);
-
-          eprintln!(
-              "Telemetry lap alignment: first Physics lap start={:.6}s, track_length={:.3}m",
-              first_physics_start_time, track_length
-          );
-
-          let mut lap_physics_starts = Vec::with_capacity(laps.len());
-          let mut t = first_physics_start_time;
-          for lap in &laps {
-              lap_physics_starts.push(t);
-              t += lap.time_sec;
-          }
-
-          '''
-          text = text[:start] + replacement + text[end:]
-
-          # Replace the entire telemetry lap-json construction block.
-          old_start = '    let mut lap_json = Vec::new();'
-          old_end = '    let mut best_sector_sec = vec![f64::INFINITY; 3];'
-          start = text.find(old_start)
-          end = text.find(old_end, start)
-          if start < 0 or end < 0:
-              raise SystemExit('Could not locate old lap telemetry block')
-
-          replacement = '''    let mut lap_json = Vec::new();
-          for (li, lap) in laps.iter().enumerate() {
-              let physics_start_time = lap_physics_starts[li];
-              let physics_end_time = physics_start_time + lap.time_sec;
-              let p_start = nearest_index_by_time(&physics_records, physics_start_time);
-              let p_end = nearest_index_by_time(&physics_records, physics_end_time);
-              let (p0, p1) = if p_start <= p_end { (p_start, p_end) } else { (p_end, p_start) };
-              let selected: Vec<_> = physics_records[p0..=p1].iter().collect();
-
-              let step = std::cmp::max(1, selected.len() / 2200);
-              let telem: Vec<_> = selected.iter().step_by(step).map(|r| {
-                  let gi = gfx_index_for_lap_time(lap, r.capture_time_sec, physics_start_time, gfx.len())
-                      .clamp(lap.gfx_start, lap.gfx_end);
-                  let g = &gfx[gi];
-                  let progress = (g.normalized_car_position as f64 * 100.0).clamp(0.0, 100.0);
-                  let distance = lap_distance(g, track_length);
-                  json!({
-                      "t": (r.capture_time_sec - physics_start_time).clamp(0.0, lap.time_sec.max(0.0)),
-                      "progress": progress,
-                      "distance": distance,
-                      "speed": r.speed_kmh,
-                      "gas": r.gas * 100.0,
-                      "brake": r.brake * 100.0,
-                      "steer": r.steer_angle,
-                      "gear": r.gear,
-                      "rpm": r.rpm
-                  })
-              }).collect();
-
-              let (brake_events, throttle_events) = event_points(
-                  &selected,
-                  &gfx,
-                  lap,
-                  physics_start_time,
-                  track_length,
-                  &track_name,
-              );
-
-              let delta = if best_sec > 0.0 { lap.time_sec - best_sec } else { 0.0 };
-              let mut full_throttle = 0usize;
-              let mut braking = 0usize;
-              let mut speed_sum = 0.0f64;
-              let mut speed_max = 0.0f64;
-              for r in &selected {
-                  let sp = r.speed_kmh as f64;
-                  speed_sum += sp;
-                  if sp > speed_max { speed_max = sp; }
-                  if r.gas >= 0.95 { full_throttle += 1; }
-                  if r.brake >= 0.05 { braking += 1; }
-              }
-              let sample_count = selected.len().max(1) as f64;
-
-              lap_json.push(json!({
-                  "index": li,
-                  "lap": lap.number,
-                  "time": lap.time_str,
-                  "time_sec": lap.time_sec,
-                  "delta": delta,
-                  "valid": lap.valid,
-                  "avg_speed": speed_sum / sample_count,
-                  "max_speed": speed_max,
-                  "full_throttle_pct": (full_throttle as f64 / sample_count) * 100.0,
-                  "brake_pct": (braking as f64 / sample_count) * 100.0,
-                  "brake_events": brake_events,
-                  "throttle_events": throttle_events,
-                  "sectors": sectors_for_lap(&gfx, lap),
-                  "telem": telem
-              }));
-          }
-
-          '''
-          # Keep the existing sector JSON construction by inserting a small
-          # helper immediately before main, rather than changing sector logic.
-          # Replace the placeholder sectors_for_lap call after defining helper.
-          helper_marker = 'fn best_ever_db_path('
-          helper_pos = text.find(helper_marker)
-          if helper_pos < 0:
-              raise SystemExit('Could not locate helper insertion point')
-          helper = '''fn sectors_for_lap(
-              gfx: &[acr_recorder::record::GraphicsRecord],
-              lap: &Lap,
-          ) -> Vec<serde_json::Value> {
-              extract_lap_sectors(&gfx, lap.gfx_start, lap.gfx_end, lap.time_sec)
-                  .iter()
-                  .enumerate()
-                  .map(|(i, t)| json!({
-                      "index": i + 1,
-                      "time_sec": t.unwrap_or(0.0),
-                      "time": t.map(fmt_sec).unwrap_or_else(|| "—".into())
-                  }))
-                  .collect()
-          }
-
-          '''
-          text = text[:helper_pos] + helper + text[helper_pos:]
-          text = text[:start] + replacement + text[end:]
-
-          path.write_text(text, encoding='utf-8', newline='\n')
-
-          # Safety checks.
-          if 'fn main() -> Result<(), Box<dyn std::error::Error>>' not in text:
-              raise SystemExit('Safety check failed: main() missing after patch')
-          if 'r.throttle' in text or 'prev_gas = r.throttle' in text:
-              raise SystemExit('Safety check failed: obsolete throttle field remains')
-          if 'fit_gfx_to_physics_by_distance' in text:
-              raise SystemExit('Safety check failed: old global distance alignment remains')
-          if 'sectors_for_lap' not in text:
-              raise SystemExit('Safety check failed: sector helper missing')
-
-      - name: Validate Rust source
-        run: cargo check --bin acr_session_report
-
-      - name: Commit fixed reporter
+      - name: Commit validated reporter
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/bin/acr_session_report.rs .github/workflows/fix-sector.yml
+          git add src/bin/acr_session_report.rs
           git diff --cached --quiet && exit 0
-          git commit -m "Fix per-lap telemetry alignment [sector-fix]"
-          git push origin main
+          git commit -m "[sector-fix] Restore validated session reporter"
+          git push
