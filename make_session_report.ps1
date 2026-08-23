@@ -20,6 +20,26 @@ Write-Host "Telemetry root: $TelemetryRoot"
 Write-Host "Sessions      : $SessionsDir"
 Write-Host ""
 
+# Build missing release binaries automatically. Cargo will reuse existing
+# artifacts, so this does not require cargo clean and only recompiles what
+# actually changed.
+if (!(Test-Path -LiteralPath $Exporter) -or !(Test-Path -LiteralPath $Analyzer)) {
+    Write-Host "Release binaries missing; building required targets..."
+    Push-Location $AcrDir
+    try {
+        if (!(Test-Path -LiteralPath $Exporter)) {
+            cargo build --release --bin acr_session_export
+            if ($LASTEXITCODE -ne 0) { throw "Failed to build acr_session_export" }
+        }
+        if (!(Test-Path -LiteralPath $Analyzer)) {
+            cargo build --release --bin acr_session_report
+            if ($LASTEXITCODE -ne 0) { throw "Failed to build acr_session_report" }
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 if (!(Test-Path -LiteralPath $Exporter)) { throw "Exporter not found: $Exporter" }
 if (!(Test-Path -LiteralPath $Analyzer)) { throw "Analyzer not found: $Analyzer" }
 if (!(Test-Path -LiteralPath $SessionsDir)) { New-Item -ItemType Directory -Path $SessionsDir -Force | Out-Null }
