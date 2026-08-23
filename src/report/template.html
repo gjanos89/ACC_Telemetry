@@ -25,9 +25,9 @@ th:first-child,td:first-child{text-align:left}.cards{display:flex;gap:12px;flex-
 
 <div class="panel">
 <h2>Lap times &amp; sectors</h2>
-<div class="legend"><span class="green-dot">â—Ź</span> Session-best lap <span class="purple-dot">â—Ź</span> Session-best sector <span>PR = new personal record</span></div>
+<div class="legend"><span class="green-dot">●</span> Session-best lap <span class="purple-dot">●</span> Session-best sector <span>PR = new personal record</span></div>
 <table>
-<thead><tr><th>Lap</th><th>Time</th><th>Î”</th><th>S1</th><th>S2</th><th>S3</th><th>Valid</th></tr></thead>
+<thead><tr><th>Lap</th><th>Time</th><th>Δ</th><th>S1</th><th>S2</th><th>S3</th><th>Valid</th></tr></thead>
 <tbody id="laps"></tbody>
 </table>
 </div>
@@ -44,14 +44,21 @@ th:first-child,td:first-child{text-align:left}.cards{display:flex;gap:12px;flex-
 <script>
 const D=__JS_DATA__;
 const base={paper_bgcolor:'#111',plot_bgcolor:'#181818',font:{color:'#ddd'},margin:{t:42,r:20,b:48,l:58},hovermode:'x unified'};
-const fmt=s=>Number.isFinite(s)&&s>0?`${Math.floor(s/60)}:${(s%60).toFixed(3).padStart(6,'0')}`:'â€”';
+const fmt=s=>Number.isFinite(s)&&s>0?`${Math.floor(s/60)}:${(s%60).toFixed(3).padStart(6,'0')}`:'—';
 const metric=(name,value)=>`<div class="metric"><span>${name}</span><b>${value}</b></div>`;
 
-document.getElementById('meta').textContent=`${D.track_name} Â· ${D.car_name}`;
+const sectorBest=D.session_best_sectors||[];
+const theoreticalBestSec=sectorBest.length===3&&sectorBest.every(s=>s&&Number.isFinite(Number(s.time_sec))&&Number(s.time_sec)>0)
+ ? sectorBest.reduce((sum,s)=>sum+Number(s.time_sec),0)
+ : 0;
+const theoreticalBest=theoreticalBestSec>0?fmt(theoreticalBestSec):'—';
+
+document.getElementById('meta').textContent=`${D.track_name} · ${D.car_name}`;
 document.getElementById('cards').innerHTML=
  `<div class="card">Laps<b>${D.laps.length}</b></div>`+
  `<div class="card">Best<b>${D.best_time}</b></div>`+
- `<div class="card">Personal record<b>${D.best_ever?D.best_ever.time:'â€”'}</b></div>`+
+ `<div class="card">Theoretical best<b>${theoreticalBest}</b></div>`+
+ `<div class="card">Personal record<b>${D.best_ever?D.best_ever.time:'—'}</b></div>`+
  `<div class="card">Physics<b>${D.physics_samples}</b></div>`+
  `<div class="card">Graphics<b>${D.graphics_samples}</b></div>`;
 
@@ -60,22 +67,22 @@ D.laps.forEach((l,i)=>{
  const tr=document.createElement('tr');
  if(l.session_best)tr.classList.add('new-pr');
  const sectors=l.sectors||[];
- const cell=(s)=>s&&s.session_best?`<td class="sector-cell sector-best">${s.time}</td>`:`<td class="sector-cell">${s?s.time:'â€”'}</td>`;
+ const cell=(s)=>s&&s.session_best?`<td class="sector-cell sector-best">${s.time}</td>`:`<td class="sector-cell">${s?s.time:'—'}</td>`;
  const pr=(D.new_personal_record&&l.session_best)?'<span class="pr-badge">PR</span>':'';
  tr.innerHTML=`<td>${l.lap}</td><td class="${l.session_best?'lap-best':''}">${l.time}${pr}</td><td>${l.delta>=0?'+':''}${l.delta.toFixed(3)}</td>${cell(sectors[0])}${cell(sectors[1])}${cell(sectors[2])}<td>${l.valid?'YES':'NO'}</td>`;
  laps.appendChild(tr);
 });
 
 const ss=document.getElementById('sectorSummary');
-(D.session_best_sectors||[]).forEach((s,i)=>{if(s)ss.innerHTML+=metric(`S${i+1}`,s.time)});
-if(!ss.innerHTML)ss.innerHTML=metric('Sectors','â€”');
+sectorBest.forEach((s,i)=>{if(s)ss.innerHTML+=metric(`S${i+1}`,s.time)});
+if(!ss.innerHTML)ss.innerHTML=metric('Sectors','—');
 const pr=document.getElementById('prSummary');
-pr.innerHTML=metric('Personal record',D.best_ever?D.best_ever.time:'â€”');
+pr.innerHTML=metric('Personal record',D.best_ever?D.best_ever.time:'—');
 if(D.new_personal_record)pr.innerHTML+=metric('Status','NEW PR');
-if(D.best_ever)pr.innerHTML+=metric('Source',`${D.best_ever.source_session||'â€”'} Â· Lap ${D.best_ever.lap||'â€”'}`);
+if(D.best_ever)pr.innerHTML+=metric('Source',`${D.best_ever.source_session||'—'} · Lap ${D.best_ever.lap||'—'}`);
 
 const a=document.getElementById('a'),b=document.getElementById('b');
-D.laps.forEach((l,i)=>{a.add(new Option(`Lap ${l.lap} â€” ${l.time}`,i));b.add(new Option(`Lap ${l.lap} â€” ${l.time}`,i))});
+D.laps.forEach((l,i)=>{a.add(new Option(`Lap ${l.lap} — ${l.time}`,i));b.add(new Option(`Lap ${l.lap} — ${l.time}`,i))});
 if(D.best_idx!==undefined){a.value=D.best_idx;b.value=D.best_idx===0?(D.laps.length>1?1:0):0;}
 function draw(id,key,title,unit){
  const A=D.laps[+a.value],B=D.laps[+b.value];if(!A||!B)return;
