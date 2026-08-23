@@ -28,24 +28,18 @@ Write-Host "Telemetry root: $TelemetryRoot"
 Write-Host "Sessions      : $SessionsDir"
 Write-Host ""
 
-# Build missing release binaries automatically. Cargo will reuse existing
-# artifacts, so this does not require cargo clean and only recompiles what
-# actually changed.
-if (!(Test-Path -LiteralPath $Exporter) -or !(Test-Path -LiteralPath $Analyzer)) {
-    Write-Host "Release binaries missing; building required targets..."
-    Push-Location $AcrDir
-    try {
-        if (!(Test-Path -LiteralPath $Exporter)) {
-            cargo build --release --bin acr_session_export
-            if ($LASTEXITCODE -ne 0) { throw "Failed to build acr_session_export" }
-        }
-        if (!(Test-Path -LiteralPath $Analyzer)) {
-            cargo build --release --bin acr_session_report
-            if ($LASTEXITCODE -ne 0) { throw "Failed to build acr_session_report" }
-        }
-    } finally {
-        Pop-Location
-    }
+# Always invoke Cargo. Cargo itself is incremental, so unchanged crates remain
+# cached while changed Rust sources (including the sector extraction fix) are
+# rebuilt. This prevents an old acr_session_report.exe from silently being used.
+Write-Host "Building release report binaries (incremental)..."
+Push-Location $AcrDir
+try {
+    cargo build --release --bin acr_session_export
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build acr_session_export" }
+    cargo build --release --bin acr_session_report
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build acr_session_report" }
+} finally {
+    Pop-Location
 }
 
 if (!(Test-Path -LiteralPath $Exporter)) { throw "Exporter not found: $Exporter" }
@@ -128,9 +122,11 @@ if ($null -ne $state) {
     if ($LASTEXITCODE -ne 0) { throw "Report analyzer failed with exit code $LASTEXITCODE" }
     if (!(Test-Path -LiteralPath $tempReport)) { throw "Report was not created: $tempReport" }
 
+    # Use the stable exported session metadata. The report filename is based on
+    # the actual ACC car/track metadata, not the internal telemetry stem.
     $metaRaw = Get-Content -LiteralPath $sessionJson -Raw -Encoding UTF8 | ConvertFrom-Json
-    $track = if ($metaRaw.track_name) { $metaRaw.track_name } else { "Unknown Track" }
-    $car   = if ($metaRaw.car_name)   { $metaRaw.car_name }   else { "Unknown Car" }
+    $track = if ($metaRaw.track_name) { [string]$metaRaw.track_name } else { "Unknown Track" }
+    $car   = if ($metaRaw.car_name)   { [string]$metaRaw.car_name }   else { "Unknown Car" }
     $date  = (Get-Item -LiteralPath $physics).LastWriteTime.ToString("yyyy-MM-dd")
     $safeCar = [regex]::Replace($car, '[<>:"/\\|?*]', '-')
     $safeTrack = [regex]::Replace($track, '[<>:"/\\|?*]', '-')
