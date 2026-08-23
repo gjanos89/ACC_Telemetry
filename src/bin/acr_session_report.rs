@@ -187,65 +187,39 @@ fn effective_physics_hz(physics: &[acr_recorder::record::PhysicsRecord], physics
     header_hz.max(1) as f64
 }
 
-fn physics_distance_cum(physics: &[acr_recorder::record::PhysicsRecord], hz: f64) -> Vec<f64> {
-    let dt = 1.0 / hz.max(1.0);
-    let mut out = Vec::with_capacity(physics.len());
-    let mut d = 0.0;
-    out.push(0.0);
-    for i in 1..physics.len() {
-        let v0 = physics[i - 1].speed_kmh.max(0.0) as f64 / 3.6;
-        let v1 = physics[i].speed_kmh.max(0.0) as f64 / 3.6;
-        d += 0.5 * (v0 + v1) * dt;
-        out.push(d);
-    }
-    out
-}
-
-fn fit_line(xs: &[f64], ys: &[f64]) -> (f64, f64) {
-    let n = xs.len() as f64;
-    if n < 2.0 { return (1.0, 0.0); }
-    let mx = xs.iter().sum::<f64>() / n;
-    let my = ys.iter().sum::<f64>() / n;
-    let mut num = 0.0;
-    let mut den = 0.0;
-    for (&x, &y) in xs.iter().zip(ys) {
-        num += (x - mx) * (y - my);
-        den += (x - mx) * (x - mx);
-    }
-    let a = if den > 1e-12 { num / den } else { 1.0 };
-    (a, my - a * mx)
-}
-
-fn nearest_distance_index(dist: &[f64], target: f64) -> usize {
-    if dist.is_empty() { return 0; }
-    let mut lo = 0usize;
-    let mut hi = dist.len();
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if dist[mid] < target { lo = mid + 1; } else { hi = mid; }
-    }
-    if lo == 0 { return 0; }
-    if lo >= dist.len() { return dist.len() - 1; }
-    if (dist[lo] - target).abs() < (dist[lo - 1] - target).abs() { lo } else { lo - 1 }
-}
-
-fn fit_gfx_to_physics_by_distance(
-    gfx: &[acr_recorder::record::GraphicsRecord],
+fn build_gfx_to_physics_time_alignment(
     physics: &[acr_recorder::record::PhysicsRecord],
+    gfx: &[acr_recorder::record::GraphicsRecord],
+    gfx_hz: u32,
     physics_hz: f64,
+    first_lap_gfx_start: usize,
 ) -> (f64, f64) {
-    let p_dist = physics_distance_cum(physics, physics_hz);
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    let step = (gfx.len() / 400).max(1);
-    for i in (0..gfx.len()).step_by(step) {
-        let d = gfx[i].distance_traveled as f64;
-        if d < 200.0 { continue; }
-        let j = nearest_distance_index(&p_dist, d);
-        xs.push(i as f64);
-        ys.push(j as f64);
+    if physics.is_empty() || gfx.is_empty() {
+        return (1.0, 0.0);
     }
-    fit_line(&xs, &ys)
+
+    let physics_drive_time = find_physics_drive_start(physics)
+        .unwrap_or_else(|| physics.first().map(|r| r.capture_time_sec).unwrap_or(0.0));
+    let physics_start = nearest_index_by_time(physics, physics_drive_time);
+
+    // The two streams have different sample rates and different pre-roll.
+    // Align them by elapsed recording time, not by distance. Distance is
+    // deliberately not used here because the two streams can cover different
+    // amounts of the session before/after the completed laps.
+    let a = physics_hz.max(1.0) / gfx_hz.max(1) as f64;
+    let b = physics_start as f64 - a * first_lap_gfx_start as f64;
+
+    eprintln!(
+        "Telemetry lap alignment: gfx lap-1 start={} ({:.3}s), physics drive start={} ({:.3}s), gfx->physics index = {:.6} * gfx + {:.1}",
+        first_lap_gfx_start,
+        first_lap_gfx_start as f64 / gfx_hz.max(1) as f64,
+        physics_start,
+        physics_drive_time,
+        a,
+        b
+    );
+
+    (a, b)
 }
 
 fn gfx_to_physics_index(gfx_index: usize, a: f64, b: f64, len: usize) -> usize {
@@ -498,7 +472,7 @@ fn save_best_ever(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let physics = env::args().nth(1).map(PathBuf::from)
-        .ok_or("Haszn─é╦çlat: acr_session_report.exe <physics.rkyv> [output.html]")?;
+        .ok_or("Hasznâ”€Ă©â•¦Ă§lat: acr_session_report.exe <physics.rkyv> [output.html]")?;
     let out = env::args().nth(2).map(PathBuf::from).unwrap_or_else(|| {
         physics.parent().unwrap_or_else(|| Path::new("."))
             .join(format!("{}_report.html",
@@ -507,7 +481,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let gfx_path = graphics_sidecar(&physics);
     if !gfx_path.exists() {
-        return Err(format!("Hi─é╦çnyzik a graphics sidecar: {}", gfx_path.display()).into());
+        return Err(format!("Hiâ”€Ă©â•¦Ă§nyzik a graphics sidecar: {}", gfx_path.display()).into());
     }
 
     let (track_name, car_name) = read_metadata(&physics);
@@ -537,19 +511,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if boundaries.is_empty() {
-        return Err("Nem tal├ílhat├│ befejezett k├Âr a graphics telemetryben.".into());
+        return Err("Nem talâ”śĂ­lhatâ”śâ”‚ befejezett kâ”śĂ‚r a graphics telemetryben.".into());
     }
 
-    // Physics and Graphics do not share packet-id/time axes.  Align them by
-    // the actual recorded distance, using the measured physics sample rate.
-    // This avoids the long-session drift caused by assuming exactly 333/60 Hz.
+    // Physics and Graphics do not share packet-id/time axes. Align them by
+    // elapsed recording time, anchored at the first completed lap. Do NOT
+    // align the streams by distance: the streams can contain different
+    // amounts of pre-roll/post-roll and therefore different total distances.
     let physics_eff_hz = effective_physics_hz(&physics_records, &physics, physics_hz);
-    let (gfx_to_phy_a, gfx_to_phy_b) = fit_gfx_to_physics_by_distance(
-        &gfx, &physics_records, physics_eff_hz,
-    );
-    eprintln!(
-        "Telemetry distance alignment: physics_eff_hz={:.3} Hz, gfx->physics index = {:.6} * gfx + {:.1}",
-        physics_eff_hz, gfx_to_phy_a, gfx_to_phy_b
+    let first_lap_gfx_start = find_lap_start_gfx(&gfx, 0, boundaries[0].1);
+    let (gfx_to_phy_a, gfx_to_phy_b) = build_gfx_to_physics_time_alignment(
+        &physics_records,
+        &gfx,
+        gfx_hz,
+        physics_eff_hz,
+        first_lap_gfx_start,
     );
 
     let mut laps = Vec::new();
@@ -597,11 +573,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (p0, p1) = if p_start <= p_end { (p_start, p_end) } else { (p_end, p_start) };
         let selected: Vec<_> = physics_records[p0..=p1].iter().collect();
         let sectors = extract_lap_sectors(
-		&gfx,
-    		lap.gfx_start,
-    		lap.gfx_end,
-    		lap.time_sec,
-	);
+            &gfx,
+            lap.gfx_start,
+            lap.gfx_end,
+            lap.time_sec,
+        );
 
         // Graphics distance is the authoritative lap coordinate.
         // Do not replace it with a fixed track length.
@@ -671,7 +647,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "sectors": sectors.iter().enumerate().map(|(i, t)| json!({
                 "index": i + 1,
                 "time_sec": t.unwrap_or(0.0),
-                "time": t.map(fmt_sec).unwrap_or_else(|| "ÔÇö".into())
+                "time": t.map(fmt_sec).unwrap_or_else(|| "Ă”Ă‡Ă¶".into())
             })).collect::<Vec<_>>(),
             "telem": telem
         }));
@@ -689,6 +665,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+
+    let theoretical_best_sec = if best_sector_sec.iter().all(|t| t.is_finite() && *t > 0.0) {
+        Some(best_sector_sec.iter().sum::<f64>())
+    } else {
+        None
+    };
+
     for lap in &mut lap_json {
         if let Some(sectors) = lap["sectors"].as_array_mut() {
             for (i, sector) in sectors.iter_mut().enumerate().take(3) {
@@ -774,6 +757,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "previous_pr_time_sec": stored_pr_sec,
         "new_personal_record": new_personal_record,
         "session_best_sectors": best_sector_sec.iter().map(|t| if t.is_finite() { json!({"time_sec": t, "time": fmt_sec(*t)}) } else { json!(null) }).collect::<Vec<_>>(),
+        "theoretical_best_time_sec": theoretical_best_sec,
+        "theoretical_best_time": theoretical_best_sec.map(fmt_sec),
         "laps": lap_json,
         "track": track
     });
@@ -793,7 +778,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .find(|p| p.exists())
         .cloned()
-        .ok_or_else(|| "Nem tal├ílhat├│ a frontend template: src/report/template.html".to_string())?;
+        .ok_or_else(|| "Nem talâ”śĂ­lhatâ”śâ”‚ a frontend template: src/report/template.html".to_string())?;
     let template = fs::read_to_string(&template_path)?;
     let html = template.replace("__JS_DATA__", &js);
 
