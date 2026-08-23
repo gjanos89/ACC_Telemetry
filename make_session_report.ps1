@@ -1,8 +1,16 @@
 param(
-    [string]$AcrDir = "C:\Users\Gönczi János\acr_telemetry"
+    [string]$AcrDir = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+# Resolve the project directory from the script location instead of a hard-coded
+# Windows user profile path. This avoids UTF-8/ANSI issues with names such as
+# Gönczi János and also makes the script portable to another machine.
+if ([string]::IsNullOrWhiteSpace($AcrDir)) {
+    $AcrDir = $PSScriptRoot
+}
+$AcrDir = (Resolve-Path -LiteralPath $AcrDir).Path
 
 $Exporter = Join-Path $AcrDir "target\release\acr_session_export.exe"
 $Analyzer = Join-Path $AcrDir "target\release\acr_session_report.exe"
