@@ -28,9 +28,6 @@ Write-Host "Telemetry root: $TelemetryRoot"
 Write-Host "Sessions      : $SessionsDir"
 Write-Host ""
 
-# Always invoke Cargo. Cargo itself is incremental, so unchanged crates remain
-# cached while changed Rust sources (including the sector extraction fix) are
-# rebuilt. This prevents an old acr_session_report.exe from silently being used.
 Write-Host "Building release report binaries (incremental)..."
 Push-Location $AcrDir
 try {
@@ -116,18 +113,55 @@ if ($null -ne $state) {
 
     Write-Host ""
     Write-Host "Generating HTML report from exported data..."
-    # The analyzer expects the actual physics .rkyv path. Passing the session
-    # directory makes it look for the graphics sidecar one level too high.
     & $Analyzer $physics $tempReport
     if ($LASTEXITCODE -ne 0) { throw "Report analyzer failed with exit code $LASTEXITCODE" }
     if (!(Test-Path -LiteralPath $tempReport)) { throw "Report was not created: $tempReport" }
 
-    # Use the stable exported session metadata. The report filename is based on
-    # the actual ACC car/track metadata, not the internal telemetry stem.
-    $metaRaw = Get-Content -LiteralPath $sessionJson -Raw -Encoding UTF8 | ConvertFrom-Json
-    $track = if ($metaRaw.track_name) { [string]$metaRaw.track_name } else { "Unknown Track" }
-    $car   = if ($metaRaw.car_name)   { [string]$metaRaw.car_name }   else { "Unknown Car" }
-    $date  = (Get-Item -LiteralPath $physics).LastWriteTime.ToString("yyyy-MM-dd")
+    # The exported session.json is deliberately stable and currently contains
+    # no identity metadata. Use the original ACC metadata sidecar instead,
+    # exactly like acr_session_report does, so the final filename contains the
+    # real car and track names.
+    $metaPath = Join-Path $sessionDir "$stem.json"
+    $track = "Unknown Track"
+    $car = "Unknown Car"
+
+    if (Test-Path -LiteralPath $metaPath) {
+        try {
+            $metaRaw = Get-Content -LiteralPath $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+            function Find-JsonString([object]$node, [string[]]$wanted) {
+                if ($null -eq $node) { return $null }
+                if ($node -is [System.Management.Automation.PSCustomObject]) {
+                    foreach ($key in $wanted) {
+                        $prop = $node.PSObject.Properties[$key]
+                        if ($null -ne $prop -and $null -ne $prop.Value) {
+                            $value = [string]$prop.Value
+                            if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+                        }
+                    }
+                    foreach ($prop in $node.PSObject.Properties) {
+                        $found = Find-JsonString $prop.Value $wanted
+                        if ($null -ne $found) { return $found }
+                    }
+                } elseif ($node -is [System.Collections.IEnumerable] -and $node -isnot [string]) {
+                    foreach ($item in $node) {
+                        $found = Find-JsonString $item $wanted
+                        if ($null -ne $found) { return $found }
+                    }
+                }
+                return $null
+            }
+
+            $trackFound = Find-JsonString $metaRaw @('track','track_name','trackName','track_id','trackId')
+            $carFound = Find-JsonString $metaRaw @('car_model','carModel','car','vehicle_model','vehicleModel')
+            if (-not [string]::IsNullOrWhiteSpace($trackFound)) { $track = $trackFound }
+            if (-not [string]::IsNullOrWhiteSpace($carFound)) { $car = $carFound }
+        } catch {
+            Write-Warning "Could not read ACC metadata sidecar $metaPath : $($_.Exception.Message)"
+        }
+    }
+
+    $date = (Get-Item -LiteralPath $physics).LastWriteTime.ToString("yyyy-MM-dd")
     $safeCar = [regex]::Replace($car, '[<>:"/\\|?*]', '-')
     $safeTrack = [regex]::Replace($track, '[<>:"/\\|?*]', '-')
     $finalReport = Join-Path $sessionDir "$safeCar - $safeTrack - $date.html"
