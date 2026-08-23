@@ -32,6 +32,7 @@ jobs:
               gfx: &[acr_recorder::record::GraphicsRecord],
               start: usize,
               end: usize,
+              lap_time_sec: f64,
           ) -> Vec<Option<f64>> {
               let mut sectors = vec![None, None, None];
               if gfx.is_empty() || start >= gfx.len() || end <= start {
@@ -64,10 +65,11 @@ jobs:
               }
 
               if let (Some(s1), Some(s2)) = (cumulative_s1, cumulative_s2) {
-                  sectors[1] = Some(s2 - s1);
-                  if let Some(lap_time) = parse_acc_time(gfx[end].last_time_str.trim()) {
-                      sectors[2] = Some(lap_time - s2);
-                  }
+                  sectors[1] = Some((s2 - s1).max(0.0));
+                  // Use the authoritative completed-lap time already parsed
+                  // from the Graphics lap boundary. Do NOT read gfx[end].last_time_str
+                  // here: that field is not a reliable per-lap time reference.
+                  sectors[2] = Some((lap_time_sec - s2).max(0.0));
               }
 
               sectors
@@ -79,6 +81,18 @@ jobs:
           new_text, count = re.subn(pattern, replacement + 'fn event_points(', text, count=1, flags=re.S)
           if count != 1:
               raise SystemExit('Could not locate extract_lap_sectors()')
+
+          # Pass the already parsed authoritative lap time into sector extraction.
+          call_pattern = r'extract_lap_sectors\(\s*&gfx,\s*lap\.gfx_start,\s*lap\.gfx_end\s*\)'
+          new_text, call_count = re.subn(
+              call_pattern,
+              'extract_lap_sectors(&gfx, lap.gfx_start, lap.gfx_end, lap.time_sec)',
+              new_text,
+              count=1,
+          )
+          if call_count != 1:
+              raise SystemExit('Could not locate extract_lap_sectors() call site')
+
           path.write_text(new_text, encoding='utf-8', newline='\n')
 
       - name: Validate Rust source
@@ -90,5 +104,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/bin/acr_session_report.rs .github/workflows/fix-sector.yml
           git diff --cached --quiet && exit 0
-          git commit -m "Fix cumulative sector times [sector-fix]"
+          git commit -m "Fix S3 from completed lap time [sector-fix]"
           git push origin main
