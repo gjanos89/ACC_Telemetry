@@ -24,7 +24,9 @@ jobs:
           from pathlib import Path
 
           path = Path('src/bin/acr_session_report.rs')
-          subprocess.run(['git', 'checkout', '96454d4', '--', str(path)], check=True)
+          # 2c6ed87 is the last known-good complete reporter: it contains
+          # main() and uses PhysicsRecord.gas (not the obsolete throttle field).
+          subprocess.run(['git', 'checkout', '2c6ed87', '--', str(path)], check=True)
           text = path.read_text(encoding='utf-8')
 
           # Replace only the sector extraction function. Keep the complete
@@ -83,9 +85,7 @@ jobs:
               sectors
           }
 
-'''
-
-          text = text[:start] + replacement + text[end + 1:]
+          text = text[:start] + replacement + text[end:]
 
           # Pass the authoritative Lap.time_sec into the extractor.
           old_call = 'extract_lap_sectors(&gfx, lap.gfx_start, lap.gfx_end)'
@@ -96,9 +96,12 @@ jobs:
 
           path.write_text(text, encoding='utf-8', newline='\n')
 
-          # Hard safety check: the restored reporter must still contain main().
+          # Hard safety checks: the restored reporter must be complete and
+          # must not contain the obsolete PhysicsRecord.throttle field.
           if 'fn main() -> Result<(), Box<dyn std::error::Error>>' not in text:
               raise SystemExit('Safety check failed: main() missing after patch')
+          if 'r.throttle' in text or 'prev_gas = r.throttle' in text:
+              raise SystemExit('Safety check failed: obsolete throttle field remains')
 
       - name: Validate Rust source
         run: cargo check --bin acr_session_report
