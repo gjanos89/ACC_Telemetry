@@ -28,7 +28,7 @@ fn parse_acc_time(s: &str) -> Option<f64> {
 }
 
 fn fmt_sec(sec: f64) -> String {
-    if !sec.is_finite() || sec <= 0.0 { return "├óÔéČÔÇŁ".into(); }
+    if !sec.is_finite() || sec <= 0.0 { return "â”śĂłĂ”Ă©ÄŚĂ”Ă‡Ĺ".into(); }
     let min = (sec / 60.0).floor();
     let s = sec - min * 60.0;
     format!("{:02.0}:{:06.3}", min, s)
@@ -187,49 +187,108 @@ fn effective_physics_hz(physics: &[acr_recorder::record::PhysicsRecord], physics
     header_hz.max(1) as f64
 }
 
-fn build_gfx_to_physics_time_alignment(
+fn physics_distance_cum(physics: &[acr_recorder::record::PhysicsRecord]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(physics.len());
+    if physics.is_empty() { return out; }
+    out.push(0.0);
+    for i in 1..physics.len() {
+        let dt = (physics[i].capture_time_sec - physics[i - 1].capture_time_sec).max(0.0);
+        let v0 = physics[i - 1].speed_kmh.max(0.0) as f64 / 3.6;
+        let v1 = physics[i].speed_kmh.max(0.0) as f64 / 3.6;
+        let prev = *out.last().unwrap();
+        out.push(prev + 0.5 * (v0 + v1) * dt);
+    }
+    out
+}
+
+fn nearest_distance_index(dist: &[f64], target: f64) -> usize {
+    if dist.is_empty() { return 0; }
+    let mut lo = 0usize;
+    let mut hi = dist.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if dist[mid] < target { lo = mid + 1; } else { hi = mid; }
+    }
+    if lo == 0 { return 0; }
+    if lo >= dist.len() { return dist.len() - 1; }
+    if (dist[lo] - target).abs() < (dist[lo - 1] - target).abs() { lo } else { lo - 1 }
+}
+
+#[derive(Clone, Copy)]
+struct PhysicsLapRange {
+    start: usize,
+    end: usize,
+}
+
+fn find_first_physics_lap_start(
     physics: &[acr_recorder::record::PhysicsRecord],
+    p_dist: &[f64],
     gfx: &[acr_recorder::record::GraphicsRecord],
-    gfx_hz: u32,
-    physics_hz: f64,
-    first_lap_gfx_start: usize,
-) -> (f64, f64) {
-    if physics.is_empty() || gfx.is_empty() {
-        return (1.0, 0.0);
+    lap: &Lap,
+) -> usize {
+    if physics.is_empty() || p_dist.is_empty() { return 0; }
+    let gfx_start_distance = gfx[lap.gfx_start].distance_traveled as f64;
+    let gfx_end_distance = gfx[lap.gfx_end].distance_traveled as f64;
+    let gfx_lap_distance = (gfx_end_distance - gfx_start_distance).abs();
+    let drive_start = find_physics_drive_start(physics)
+        .map(|t| nearest_index_by_time(physics, t))
+        .unwrap_or(0);
+
+    // The first completed lap is located by two independent quantities that
+    // must agree: elapsed lap time and travelled lap distance.  This avoids
+    // assuming a fixed stream offset or a nominal 333/60 Hz ratio.
+    let max_start = physics.len().saturating_sub(2);
+    let mut best = (f64::INFINITY, drive_start);
+    let step = 4usize;
+    for i in (drive_start..max_start).step_by(step) {
+        let target_time = physics[i].capture_time_sec + lap.time_sec;
+        let j = nearest_index_by_time(physics, target_time);
+        if j <= i { continue; }
+        let dt = physics[j].capture_time_sec - physics[i].capture_time_sec;
+        let dd = p_dist[j] - p_dist[i];
+        let time_err = (dt - lap.time_sec).abs();
+        let dist_err = (dd - gfx_lap_distance).abs();
+        let score = dist_err + time_err * 20.0;
+        if score < best.0 {
+            best = (score, i);
+        }
     }
 
-    let physics_drive_time = find_physics_drive_start(physics)
-        .unwrap_or_else(|| physics.first().map(|r| r.capture_time_sec).unwrap_or(0.0));
-    let physics_start = nearest_index_by_time(physics, physics_drive_time);
-
-    // The two streams have different sample rates and different pre-roll.
-    // Align them by elapsed recording time, not by distance. Distance is
-    // deliberately not used here because the two streams can cover different
-    // amounts of the session before/after the completed laps.
-    let a = physics_hz.max(1.0) / gfx_hz.max(1) as f64;
-    let b = physics_start as f64 - a * first_lap_gfx_start as f64;
-
     eprintln!(
-        "Telemetry lap alignment: gfx lap-1 start={} ({:.3}s), physics drive start={} ({:.3}s), gfx->physics index = {:.6} * gfx + {:.1}",
-        first_lap_gfx_start,
-        first_lap_gfx_start as f64 / gfx_hz.max(1) as f64,
-        physics_start,
-        physics_drive_time,
-        a,
-        b
+        "Telemetry lap alignment: first lap start physics={} distance={:.2} m, graphics lap distance={:.2} m, score={:.3}",
+        best.1, p_dist[best.1], gfx_lap_distance, best.0
     );
-
-    (a, b)
+    best.1
 }
 
-fn gfx_to_physics_index(gfx_index: usize, a: f64, b: f64, len: usize) -> usize {
-    if len == 0 { return 0; }
-    (a * gfx_index as f64 + b).round().clamp(0.0, (len - 1) as f64) as usize
-}
+fn build_physics_lap_ranges(
+    physics: &[acr_recorder::record::PhysicsRecord],
+    p_dist: &[f64],
+    gfx: &[acr_recorder::record::GraphicsRecord],
+    laps: &[Lap],
+) -> Vec<PhysicsLapRange> {
+    if laps.is_empty() || physics.is_empty() || p_dist.is_empty() {
+        return Vec::new();
+    }
 
-fn physics_to_gfx_index(physics_index: usize, a: f64, b: f64, len: usize) -> usize {
-    if len == 0 || a.abs() < 1e-12 { return 0; }
-    (((physics_index as f64 - b) / a).round()).clamp(0.0, (len - 1) as f64) as usize
+    let first_start = find_first_physics_lap_start(physics, p_dist, gfx, &laps[0]);
+    let mut ranges: Vec<PhysicsLapRange> = Vec::with_capacity(laps.len());
+    let mut start_distance = p_dist[first_start];
+
+    for (i, lap) in laps.iter().enumerate() {
+        if i > 0 {
+            start_distance = p_dist[ranges[i - 1].start]
+                + (gfx[laps[i - 1].gfx_end].distance_traveled as f64
+                    - gfx[laps[i - 1].gfx_start].distance_traveled as f64).abs();
+        }
+        let lap_distance = (gfx[lap.gfx_end].distance_traveled as f64
+            - gfx[lap.gfx_start].distance_traveled as f64).abs();
+        let end_distance = start_distance + lap_distance;
+        let start = nearest_distance_index(p_dist, start_distance);
+        let end = nearest_distance_index(p_dist, end_distance).max(start);
+        ranges.push(PhysicsLapRange { start, end });
+    }
+    ranges
 }
 
 fn find_physics_drive_start(
@@ -284,18 +343,35 @@ fn find_lap_start_gfx(
     previous_end: usize,
     current_end: usize,
 ) -> usize {
-    if gfx.is_empty() || current_end <= previous_end + 1 {
+    if gfx.is_empty() || current_end <= previous_end {
         return previous_end.min(gfx.len().saturating_sub(1));
     }
-    // completed_lap marks the finish of the previous lap. Start with the
-    // FIRST start/finish crossing after that boundary, never the last one.
-    for i in (previous_end + 1)..current_end {
-        let g = &gfx[i];
-        if (g.normalized_car_position as f64) <= 0.03 && !g.is_in_pit_lane {
-            return i;
+
+    // completed_lap is the finish boundary, but it is not a reliable lap-start
+    // boundary across pit stops. ACC can keep completed_lap unchanged while the
+    // car leaves the pits and crosses start/finish again. Use the LAST genuine
+    // start/finish crossing before the completed-lap boundary instead.
+    //
+    // For ordinary consecutive laps there is no extra crossing between the two
+    // completed-lap boundaries, so the previous boundary itself is the start.
+    let hi = current_end.saturating_sub(1).min(gfx.len().saturating_sub(1));
+    let lo = previous_end.saturating_add(1).min(hi);
+
+    if lo <= hi {
+        for i in (lo..=hi).rev() {
+            if gfx[i].is_in_pit_lane {
+                continue;
+            }
+            let prev = &gfx[i - 1];
+            let p = prev.normalized_car_position as f64;
+            let n = gfx[i].normalized_car_position as f64;
+            if p >= 0.90 && n <= 0.10 {
+                return i;
+            }
         }
     }
-    previous_end.saturating_add(1).min(current_end)
+
+    previous_end.min(gfx.len().saturating_sub(1))
 }
 
 fn sector_time_sec(g: &acr_recorder::record::GraphicsRecord) -> Option<f64> {
@@ -362,14 +438,11 @@ fn extract_lap_sectors(
 fn event_points(
     selected: &[&acr_recorder::record::PhysicsRecord],
     physics: &[acr_recorder::record::PhysicsRecord],
-    gfx: &[acr_recorder::record::GraphicsRecord],
-    gfx_start: usize,
-    gfx_end: usize,
-    lap_start_physics_time: f64,
+    p_dist: &[f64],
+    p_start: usize,
     lap_time_sec: f64,
+    lap_distance: f64,
     track_name: &str,
-    gfx_to_phy_a: f64,
-    gfx_to_phy_b: f64,
 ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
     let mut brakes = Vec::new();
     let mut throttles = Vec::new();
@@ -377,22 +450,17 @@ fn event_points(
     let mut prev_gas = 0.0f32;
     let mut last_brake_dist = -10_000.0f64;
     let mut last_throttle_dist = -10_000.0f64;
-
-    let gfx_start_distance = gfx[gfx_start].distance_traveled as f64;
+    let lap_start_time = physics.get(p_start).map(|r| r.capture_time_sec).unwrap_or(0.0);
 
     for r in selected {
         let physics_index = nearest_index_by_time(physics, r.capture_time_sec);
-        let gi = physics_to_gfx_index(physics_index, gfx_to_phy_a, gfx_to_phy_b, gfx.len())
-            .clamp(gfx_start, gfx_end);
-        let g = &gfx[gi];
-
-        let progress = (g.normalized_car_position as f64 * 100.0).clamp(0.0, 100.0);
-        let dist = (g.distance_traveled as f64 - gfx_start_distance).max(0.0);
-
-        // Event time is the real physics timestamp relative to lap start.
-        // Do NOT derive time from distance / lap time: that destroys braking
-        // deltas whenever speed differs between the two laps.
-        let event_time = (r.capture_time_sec - lap_start_physics_time)
+        let dist = if physics_index < p_dist.len() && p_start < p_dist.len() {
+            (p_dist[physics_index] - p_dist[p_start]).max(0.0)
+        } else { 0.0 };
+        let progress = if lap_distance > 0.0 {
+            (dist / lap_distance * 100.0).clamp(0.0, 100.0)
+        } else { 0.0 };
+        let event_time = (r.capture_time_sec - lap_start_time)
             .clamp(0.0, lap_time_sec.max(0.0));
 
         if r.brake >= 0.10 && prev_brake < 0.05 && dist - last_brake_dist >= 80.0 {
@@ -514,19 +582,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Nem talâ”śĂ­lhatâ”śâ”‚ befejezett kâ”śĂ‚r a graphics telemetryben.".into());
     }
 
-    // Physics and Graphics do not share packet-id/time axes. Align them by
-    // elapsed recording time, anchored at the first completed lap. Do NOT
-    // align the streams by distance: the streams can contain different
-    // amounts of pre-roll/post-roll and therefore different total distances.
-    let physics_eff_hz = effective_physics_hz(&physics_records, &physics, physics_hz);
-    let first_lap_gfx_start = find_lap_start_gfx(&gfx, 0, boundaries[0].1);
-    let (gfx_to_phy_a, gfx_to_phy_b) = build_gfx_to_physics_time_alignment(
-        &physics_records,
-        &gfx,
-        gfx_hz,
-        physics_eff_hz,
-        first_lap_gfx_start,
-    );
+    // The two telemetry streams have independent clocks and Graphics distance
+    // can reset/wrap.  Build the Physics lap ranges from elapsed time + travelled
+    // distance instead of using one global Graphics->Physics index transform.
+    let physics_dist = physics_distance_cum(&physics_records);
 
     let mut laps = Vec::new();
     let mut prev_boundary = 0usize;
@@ -549,6 +608,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         prev_boundary = end_idx;
     }
 
+    let physics_lap_ranges = build_physics_lap_ranges(
+        &physics_records, &physics_dist, &gfx, &laps,
+    );
+    if physics_lap_ranges.len() != laps.len() {
+        return Err("Nem sikerült a Physics lapok megfeleltetése a Graphics lapokhoz.".into());
+    }
+
     let best_idx = laps.iter().enumerate()
         .filter(|(_, l)| l.valid && l.time_sec > 0.0)
         .min_by(|a,b| a.1.time_sec.partial_cmp(&b.1.time_sec).unwrap())
@@ -567,30 +633,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut lap_json = Vec::new();
     for (li, lap) in laps.iter().enumerate() {
-        let p_start = gfx_to_physics_index(lap.gfx_start, gfx_to_phy_a, gfx_to_phy_b, physics_records.len());
-        let p_end = gfx_to_physics_index(lap.gfx_end, gfx_to_phy_a, gfx_to_phy_b, physics_records.len());
+        let range = physics_lap_ranges[li];
+        let p_start = range.start;
+        let p_end = range.end;
         let physics_start_time = physics_records[p_start].capture_time_sec;
-        let (p0, p1) = if p_start <= p_end { (p_start, p_end) } else { (p_end, p_start) };
-        let selected: Vec<_> = physics_records[p0..=p1].iter().collect();
+        let selected: Vec<_> = physics_records[p_start..=p_end].iter().collect();
         let sectors = extract_lap_sectors(
-            &gfx,
-            lap.gfx_start,
-            lap.gfx_end,
-            lap.time_sec,
-        );
+		&gfx,
+    		lap.gfx_start,
+    		lap.gfx_end,
+    		lap.time_sec,
+	);
 
-        // Graphics distance is the authoritative lap coordinate.
-        // Do not replace it with a fixed track length.
-        let gfx_start_distance = gfx[lap.gfx_start].distance_traveled as f64;
+        let lap_distance = (gfx[lap.gfx_end].distance_traveled as f64
+            - gfx[lap.gfx_start].distance_traveled as f64).abs();
+        let physics_lap_distance = (physics_dist[p_end] - physics_dist[p_start]).max(0.0);
 
         let step = std::cmp::max(1, selected.len() / 2200);
         let telem: Vec<_> = selected.iter().step_by(step).map(|r| {
             let pi = nearest_index_by_time(&physics_records, r.capture_time_sec);
-            let gi = physics_to_gfx_index(pi, gfx_to_phy_a, gfx_to_phy_b, gfx.len())
-                .clamp(lap.gfx_start, lap.gfx_end);
-            let g = &gfx[gi];
-            let progress = (g.normalized_car_position as f64 * 100.0).clamp(0.0, 100.0);
-            let distance = (g.distance_traveled as f64 - gfx_start_distance).max(0.0);
+            let distance = (physics_dist[pi] - physics_dist[p_start]).clamp(0.0, physics_lap_distance);
+            let progress = if physics_lap_distance > 0.0 {
+                (distance / physics_lap_distance * 100.0).clamp(0.0, 100.0)
+            } else { 0.0 };
             json!({
                 "t": (r.capture_time_sec - physics_start_time).clamp(0.0, lap.time_sec.max(0.0)),
                 "progress": progress,
@@ -607,14 +672,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (brake_events, throttle_events) = event_points(
             &selected,
             &physics_records,
-            &gfx,
-            lap.gfx_start,
-            lap.gfx_end,
-            physics_start_time,
+            &physics_dist,
+            p_start,
             lap.time_sec,
+            lap_distance.max(physics_lap_distance),
             &track_name,
-            gfx_to_phy_a,
-            gfx_to_phy_b,
         );
 
         let delta = if best_sec > 0.0 { lap.time_sec - best_sec } else { 0.0 };
@@ -665,13 +727,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-
-    let theoretical_best_sec = if best_sector_sec.iter().all(|t| t.is_finite() && *t > 0.0) {
-        Some(best_sector_sec.iter().sum::<f64>())
-    } else {
-        None
-    };
-
     for lap in &mut lap_json {
         if let Some(sectors) = lap["sectors"].as_array_mut() {
             for (i, sector) in sectors.iter_mut().enumerate().take(3) {
@@ -752,13 +807,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "duration": duration,
         "max_speed": max_speed,
         "best_idx": best_idx.unwrap_or(0),
-        "best_time": if best_sec > 0.0 { fmt_sec(best_sec) } else { "├óÔéČÔÇŁ".to_string() },
+        "best_time": if best_sec > 0.0 { fmt_sec(best_sec) } else { "â”śĂłĂ”Ă©ÄŚĂ”Ă‡Ĺ".to_string() },
         "best_ever": best_ever,
         "previous_pr_time_sec": stored_pr_sec,
         "new_personal_record": new_personal_record,
         "session_best_sectors": best_sector_sec.iter().map(|t| if t.is_finite() { json!({"time_sec": t, "time": fmt_sec(*t)}) } else { json!(null) }).collect::<Vec<_>>(),
-        "theoretical_best_time_sec": theoretical_best_sec,
-        "theoretical_best_time": theoretical_best_sec.map(fmt_sec),
         "laps": lap_json,
         "track": track
     });
