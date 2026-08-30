@@ -44,7 +44,8 @@ if (!(Test-Path -LiteralPath $Analyzer)) { throw "Analyzer not found: $Analyzer"
 if (!(Test-Path -LiteralPath $SessionsDir)) { New-Item -ItemType Directory -Path $SessionsDir -Force | Out-Null }
 
 $physicsFiles = Get-ChildItem -LiteralPath $TelemetryRoot -Recurse -Filter "*.rkyv" -File |
-    Where-Object { $_.Name -notlike "*.graphics.rkyv" }
+    Where-Object { $_.Name -notlike "*.graphics.rkyv" } |
+    Sort-Object LastWriteTime -Descending
 
 if (!$physicsFiles) {
     throw "No physics rkyv files found under $TelemetryRoot"
