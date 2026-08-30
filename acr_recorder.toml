@@ -1,9 +1,10 @@
 # Local recorder configuration for this ACC telemetry installation.
-# Raw recordings are stored on D: so the recorder never falls back to C:.
+# Raw recordings are stored on D:.
 
 [recorder]
 raw_output_dir = "D:/Games/ACC_Telemetry/raw"
 notes_dir = "D:/Games/ACC_Telemetry/notes"
+stop_file_path = "D:/Games/ACC_Telemetry/acr_stop"
 record_graphics = true
 ring_mode = false
 ring_slots = 8
