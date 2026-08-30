@@ -21,7 +21,7 @@ impl AppState {
         let _ = fs::create_dir_all(RAW_DIR);
         let _ = fs::remove_file(STOP_FILE);
         let exe = Self::exe_dir().join("acr_recorder.exe");
-        match Command::new(&exe).spawn() {
+        match Command::new(&exe).current_dir(Self::project_dir()).spawn() {
             Ok(child) => { self.recorder = Some(child); self.status = format!("Recording → {}", RAW_DIR); }
             Err(e) => self.status = format!("Recorder start failed: {e}"),
         }
@@ -50,6 +50,7 @@ impl AppState {
         let ps1 = Self::project_dir().join("make_session_report.ps1");
         self.status = "Generating report...".into();
         match Command::new("powershell.exe")
+            .current_dir(Self::project_dir())
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&ps1)
             .spawn()
