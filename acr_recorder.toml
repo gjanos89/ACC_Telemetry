@@ -1,0 +1,21 @@
+# Local recorder configuration for this ACC telemetry installation.
+# Raw recordings are stored on D: so the recorder never falls back to C:.
+
+[recorder]
+raw_output_dir = "D:/Games/ACC_Telemetry/raw"
+notes_dir = "D:/Games/ACC_Telemetry/notes"
+record_graphics = true
+ring_mode = false
+ring_slots = 8
+ring_prefix = "acc_ring"
+rotate_on_distance_reset = true
+distance_reset_min_prev_m = 200.0
+distance_reset_max_curr_m = 30.0
+distance_reset_cooldown_secs = 8
+
+[export]
+default_method = "csv"
+sqlite_db_path = "D:/Games/ACC_Telemetry/telemetry.db"
+
+[export.motec]
+profile = "rbr"
