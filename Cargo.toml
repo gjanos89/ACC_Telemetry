@@ -97,9 +97,12 @@ path = "src/bin/acr_stream_lag_test.rs"
 name = "acr_analyze_timing_recording"
 path = "src/bin/acr_analyze_timing_recording.rs"
 
+[[bin]]
+name = "acr_control"
+path = "src/bin/acr_control.rs"
+
 [features]
 default = ["acr_timing_bin"]
-# Timing-only build: pacenotes disabled at runtime (`acr_timing` bin always sets this).
 acr_timing_bin = []
 
 [dependencies]
@@ -122,6 +125,7 @@ dirs = "5.0"
 tiny_http = "0.12"
 shapefile = "0.8.0"
 rodio = { version = "0.19", default-features = false, features = ["wav"] }
+eframe = "0.32"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [
