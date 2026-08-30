@@ -1,0 +1,129 @@
+use eframe::egui;
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::time::Duration;
+
+const RAW_DIR: &str = r"D:\Games\ACC_Telemetry\raw";
+const SESSIONS_DIR: &str = r"D:\Games\ACC_Telemetry\sessions";
+const STOP_FILE: &str = r"C:\Users\Public\acr_telemetry_stop";
+
+struct AppState {
+    recorder: Option<Child>,
+    status: String,
+}
+
+impl AppState {
+    fn new() -> Self { Self { recorder: None, status: "Ready".into() } }
+    fn recording(&self) -> bool { self.recorder.is_some() }
+
+    fn exe_dir() -> PathBuf {
+        std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    fn project_dir() -> PathBuf {
+        Self::exe_dir().parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    fn start(&mut self) {
+        if self.recording() { return; }
+        let _ = fs::create_dir_all(RAW_DIR);
+        let exe = Self::exe_dir().join("acr_recorder.exe");
+        match Command::new(&exe).spawn() {
+            Ok(child) => {
+                self.recorder = Some(child);
+                self.status = format!("Recording → {}", RAW_DIR);
+            }
+            Err(e) => self.status = format!("Recorder start failed: {e}"),
+        }
+    }
+
+    fn stop(&mut self) {
+        if !self.recording() { return; }
+        // Recorder supports a stop-file so it can flush/close the rkyv files cleanly.
+        if let Some(parent) = PathBuf::from(STOP_FILE).parent() { let _ = fs::create_dir_all(parent); }
+        match fs::write(STOP_FILE, b"stop") {
+            Ok(_) => self.status = "Stopping recorder...".into(),
+            Err(e) => self.status = format!("Could not create stop file: {e}"),
+        }
+    }
+
+    fn poll(&mut self) {
+        if let Some(child) = self.recorder.as_mut() {
+            if let Ok(Some(_)) = child.try_wait() {
+                self.recorder = None;
+                let _ = fs::remove_file(STOP_FILE);
+                self.status = "Recording stopped — session ready".into();
+            }
+        }
+    }
+
+    fn generate_report(&mut self) {
+        if self.recording() { return; }
+        let ps1 = Self::project_dir().join("make_session_report.ps1");
+        self.status = "Generating report...".into();
+        match Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&ps1)
+            .spawn()
+        {
+            Ok(_) => self.status = format!("Generating report from {}", SESSIONS_DIR),
+            Err(e) => self.status = format!("Report start failed: {e}"),
+        }
+    }
+}
+
+struct ControlApp { state: AppState }
+
+impl eframe::App for ControlApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.state.poll();
+        let recording = self.state.recording();
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add_space(12.0);
+            ui.vertical_centered(|ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(116.0, 54.0), egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 10.0, egui::Color32::from_rgb(24, 24, 28));
+                painter.rect_stroke(rect, 10.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(210, 30, 45)), egui::StrokeKind::Outside);
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, "ACC", egui::FontId::proportional(30.0), egui::Color32::WHITE);
+                ui.add_space(8.0);
+                ui.heading("TELEMETRY CONTROL");
+                ui.label("Assetto Corsa Competizione");
+            });
+
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            ui.horizontal(|ui| {
+                ui.label("STATUS:");
+                ui.colored_label(if recording { egui::Color32::from_rgb(230, 60, 60) } else { egui::Color32::from_rgb(90, 210, 120) }, if recording { "● RECORDING" } else { "● READY" });
+            });
+            ui.add_space(6.0);
+            ui.label(format!("RAW: {}", RAW_DIR));
+
+            ui.add_space(18.0);
+            if ui.add_enabled(!recording, egui::Button::new("🔴  START RECORDING").min_size(egui::vec2(300.0, 48.0))).clicked() { self.state.start(); }
+            ui.add_space(7.0);
+            if ui.add_enabled(recording, egui::Button::new("■  STOP RECORDING").min_size(egui::vec2(300.0, 48.0))).clicked() { self.state.stop(); }
+            ui.add_space(7.0);
+            if ui.add_enabled(!recording, egui::Button::new("📊  GENERATE REPORT").min_size(egui::vec2(300.0, 48.0))).clicked() { self.state.generate_report(); }
+
+            ui.add_space(18.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(&self.state.status);
+        });
+        ctx.request_repaint_after(Duration::from_millis(250));
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([380.0, 460.0]).with_resizable(false),
+        ..Default::default()
+    };
+    eframe::run_native("ACC Telemetry Control", options, Box::new(|_cc| Ok(Box::new(ControlApp { state: AppState::new() }))))
+}
