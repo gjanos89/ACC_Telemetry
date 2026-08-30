@@ -8,13 +8,10 @@
 body{font-family:Segoe UI,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:24px}
 h1{margin:0 0 4px}.muted{color:#999}
 .panel{background:#181818;border:1px solid #333;border-radius:10px;padding:16px;margin:14px 0}
-.cards{display:flex;gap:12px;flex-wrap:wrap}
-.card{background:#1b1b1b;border:1px solid #333;border-radius:10px;padding:14px 18px;min-width:160px}
+.cards{display:flex;gap:12px;flex-wrap:wrap}.card{background:#1b1b1b;border:1px solid #333;border-radius:10px;padding:14px 18px;min-width:160px}
 .card span{display:block;color:#999;font-size:12px}.card b{display:block;font-size:24px;margin-top:5px}
-table{width:100%;border-collapse:collapse}th,td{padding:9px 10px;border-bottom:1px solid #333;text-align:right}
-th:first-child,td:first-child{text-align:left}
-th{color:#aaa;font-weight:600}
-.best{font-weight:800}.lap-best{color:#78d98a}.sector-best{color:#c084fc}.pr{color:#78d98a;font-weight:800;margin-left:8px}
+table{width:100%;border-collapse:collapse}th,td{padding:9px 10px;border-bottom:1px solid #333;text-align:right}th:first-child,td:first-child{text-align:left}th{color:#aaa;font-weight:600}
+.best{font-weight:800}.lap-best{color:#78d98a}.sector-best{color:#c084fc}.pr{color:#78d98a;font-weight:800;margin-left:8px}.invalid{color:#ff6b6b;font-weight:700}.valid{color:#78d98a;font-weight:700}
 .small{font-size:13px;color:#aaa}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .metric{background:#202020;border:1px solid #383838;border-radius:7px;padding:10px 12px}.metric span{display:block;color:#999;font-size:11px}.metric b{font-size:17px}
 </style>
@@ -22,7 +19,6 @@ th{color:#aaa;font-weight:600}
 <body>
 <h1>ACC Timing Report</h1>
 <div class="muted" id="meta"></div>
-
 <div class="cards" id="cards"></div>
 
 <div class="panel">
@@ -41,45 +37,42 @@ th{color:#aaa;font-weight:600}
 <div class="panel">
 <h2>Best Ever</h2>
 <div class="grid" id="bestEver"></div>
+<div class="panel" style="margin-top:12px;margin-bottom:0">
+  <h3>Best Ever sectors</h3>
+  <div class="grid" id="bestEverSectors"></div>
+</div>
 </div>
 
 <script>
 const D=__JS_DATA__;
 const fmt=s=>Number.isFinite(Number(s))&&Number(s)>0?`${Math.floor(Number(s)/60)}:${(Number(s)%60).toFixed(3).padStart(6,'0')}`:'—';
 const metric=(name,value)=>`<div class="metric"><span>${name}</span><b>${value}</b></div>`;
-
+D.laps=D.laps||[];
 document.getElementById('meta').textContent=`${D.track_name||'Unknown track'} · ${D.car_name||'Unknown car'}`;
-
 document.getElementById('cards').innerHTML=
- `<div class="card"><span>Laps</span><b>${D.laps?.length||0}</b></div>`+
+ `<div class="card"><span>Laps</span><b>${D.laps.length}</b></div>`+
  `<div class="card"><span>Session best</span><b>${D.best_time||'—'}</b></div>`+
- `<div class="card"><span>Theoretical best</span><b>${(() => { const s=D.session_best_sectors||[]; if(s.length!==3||s.some(x=>!x||!(Number(x.time_sec)>0))) return '—'; return fmt(s.reduce((a,x)=>a+Number(x.time_sec),0)); })()}</b></div>`+
+ `<div class="card"><span>Theoretical best</span><b>${(()=>{const s=D.session_best_sectors||[];if(s.length!==3||s.some(x=>!x||!(Number(x.time_sec)>0)))return '—';return fmt(s.reduce((a,x)=>a+Number(x.time_sec),0));})()}</b></div>`+
  `<div class="card"><span>Best Ever</span><b>${D.best_ever?.time||'—'}</b></div>`;
-
 const laps=document.getElementById('laps');
-(D.laps||[]).forEach(l=>{
- const tr=document.createElement('tr');
- const sectors=l.sectors||[];
+D.laps.forEach(l=>{
+ const tr=document.createElement('tr'); const sectors=l.sectors||[];
  const cell=s=>s?.session_best?`<td class="sector-best">${s.time}</td>`:`<td>${s?.time||'—'}</td>`;
  const pr=(D.new_personal_record&&l.session_best)?'<span class="pr">NEW BEST</span>':'';
- tr.innerHTML=`<td>${l.lap}</td><td class="${l.session_best?'lap-best':''}">${l.time}${pr}</td><td>${Number(l.delta)>=0?'+':''}${Number(l.delta||0).toFixed(3)}</td>${cell(sectors[0])}${cell(sectors[1])}${cell(sectors[2])}<td>${l.valid?'YES':'NO'}</td>`;
+ const valid=l.valid===true; const validity=valid?'<span class="valid">YES</span>':'<span class="invalid">NO</span>';
+ tr.innerHTML=`<td>${l.lap}</td><td class="${l.session_best?'lap-best':''}">${l.time}${pr}</td><td>${Number(l.delta)>=0?'+':''}${Number(l.delta||0).toFixed(3)}</td>${cell(sectors[0])}${cell(sectors[1])}${cell(sectors[2])}<td>${validity}</td>`;
  laps.appendChild(tr);
 });
-
 const ss=document.getElementById('sectorSummary');
 (D.session_best_sectors||[]).forEach((s,i)=>{if(s)ss.innerHTML+=metric(`S${i+1}`,s.time||fmt(s.time_sec))});
 if(!ss.innerHTML)ss.innerHTML=metric('Sectors','—');
-
 const be=document.getElementById('bestEver');
-if(D.best_ever){
- be.innerHTML=
-   metric('Best Ever',D.best_ever.time||fmt(D.best_ever.time_sec))+
-   metric('Car',D.best_ever.car_name||D.car_name||'—')+
-   metric('Lap',D.best_ever.lap||'—')+
-   metric('Session',D.best_ever.source_session||'—');
-}else{
- be.innerHTML=metric('Best Ever','—');
-}
+if(D.best_ever){be.innerHTML=metric('Best Ever',D.best_ever.time||fmt(D.best_ever.time_sec))+metric('Car',D.best_ever.car_name||D.car_name||'—')+metric('Lap',D.best_ever.lap||'—')+metric('Session',D.best_ever.source_session||'—');}
+else be.innerHTML=metric('Best Ever','—');
+const bes=document.getElementById('bestEverSectors');
+const bsecs=D.best_ever?.sectors||[];
+if(bsecs.length){bsecs.slice(0,3).forEach((s,i)=>{bes.innerHTML+=metric(`S${i+1}`,s?.time||fmt(s?.time_sec))});}
+else bes.innerHTML=metric('Sectors','— (record predates sector storage)');
 </script>
 </body>
 </html>
