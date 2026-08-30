@@ -3,95 +3,83 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ACC Session Report</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<title>ACC Timing Report</title>
 <style>
 body{font-family:Segoe UI,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:24px}
-h1{margin:0}.muted{color:#999}.plot{height:360px}
+h1{margin:0 0 4px}.muted{color:#999}
 .panel{background:#181818;border:1px solid #333;border-radius:10px;padding:16px;margin:14px 0}
-select{background:#222;color:#eee;border:1px solid #555;border-radius:6px;padding:7px 10px}
-table{width:100%;border-collapse:collapse}th,td{padding:8px;border-bottom:1px solid #333;text-align:right}
-th:first-child,td:first-child{text-align:left}.cards{display:flex;gap:12px;flex-wrap:wrap}
-.card{background:#1b1b1b;border:1px solid #333;border-radius:10px;padding:14px 18px;min-width:140px}.card b{display:block;font-size:22px;margin-top:5px}
-.lap-best{color:#78d98a;font-weight:800}.new-pr{box-shadow:inset 3px 0 0 #78d98a}.pr-badge{color:#78d98a;font-weight:800;margin-left:7px}
-.sector-best{color:#c084fc;font-weight:800}.sector-cell{min-width:82px}.legend{font-size:12px;color:#aaa;margin:8px 0}.legend span{margin-right:16px}.purple-dot{color:#c084fc}.green-dot{color:#78d98a}
-.summary{display:flex;gap:10px;flex-wrap:wrap}.metric{background:#202020;border:1px solid #383838;border-radius:7px;padding:9px 12px;min-width:120px}.metric span{display:block;color:#999;font-size:11px}.metric b{font-size:16px}
+.cards{display:flex;gap:12px;flex-wrap:wrap}
+.card{background:#1b1b1b;border:1px solid #333;border-radius:10px;padding:14px 18px;min-width:160px}
+.card span{display:block;color:#999;font-size:12px}.card b{display:block;font-size:24px;margin-top:5px}
+table{width:100%;border-collapse:collapse}th,td{padding:9px 10px;border-bottom:1px solid #333;text-align:right}
+th:first-child,td:first-child{text-align:left}
+th{color:#aaa;font-weight:600}
+.best{font-weight:800}.lap-best{color:#78d98a}.sector-best{color:#c084fc}.pr{color:#78d98a;font-weight:800;margin-left:8px}
+.small{font-size:13px;color:#aaa}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.metric{background:#202020;border:1px solid #383838;border-radius:7px;padding:10px 12px}.metric span{display:block;color:#999;font-size:11px}.metric b{font-size:17px}
 </style>
 </head>
 <body>
-<h1>ACC Session Report</h1>
+<h1>ACC Timing Report</h1>
 <div class="muted" id="meta"></div>
+
 <div class="cards" id="cards"></div>
 
 <div class="panel">
 <h2>Lap times &amp; sectors</h2>
-<div class="legend"><span class="green-dot">●</span> Session-best lap <span class="purple-dot">●</span> Session-best sector <span>PR = new personal record</span></div>
 <table>
-<thead><tr><th>Lap</th><th>Time</th><th>Δ</th><th>S1</th><th>S2</th><th>S3</th><th>Valid</th></tr></thead>
+<thead><tr><th>Lap</th><th>Lap time</th><th>Δ</th><th>S1</th><th>S2</th><th>S3</th><th>Valid</th></tr></thead>
 <tbody id="laps"></tbody>
 </table>
 </div>
 
-<div class="panel"><h2>Session best sectors</h2><div class="summary" id="sectorSummary"></div></div>
-<div class="panel"><h2>Personal record</h2><div class="summary" id="prSummary"></div></div>
+<div class="panel">
+<h2>Session best sectors</h2>
+<div class="grid" id="sectorSummary"></div>
+</div>
 
 <div class="panel">
-<h2>Lap comparison</h2>
-<select id="a"></select> <select id="b"></select>
-<div id="speed" class="plot"></div><div id="gas" class="plot"></div><div id="brake" class="plot"></div><div id="steer" class="plot"></div>
+<h2>Best Ever</h2>
+<div class="grid" id="bestEver"></div>
 </div>
 
 <script>
 const D=__JS_DATA__;
-const base={paper_bgcolor:'#111',plot_bgcolor:'#181818',font:{color:'#ddd'},margin:{t:42,r:20,b:48,l:58},hovermode:'x unified'};
-const fmt=s=>Number.isFinite(s)&&s>0?`${Math.floor(s/60)}:${(s%60).toFixed(3).padStart(6,'0')}`:'—';
+const fmt=s=>Number.isFinite(Number(s))&&Number(s)>0?`${Math.floor(Number(s)/60)}:${(Number(s)%60).toFixed(3).padStart(6,'0')}`:'—';
 const metric=(name,value)=>`<div class="metric"><span>${name}</span><b>${value}</b></div>`;
 
-const sectorBest=D.session_best_sectors||[];
-const theoreticalBestSec=sectorBest.length===3&&sectorBest.every(s=>s&&Number.isFinite(Number(s.time_sec))&&Number(s.time_sec)>0)
- ? sectorBest.reduce((sum,s)=>sum+Number(s.time_sec),0)
- : 0;
-const theoreticalBest=theoreticalBestSec>0?fmt(theoreticalBestSec):'—';
+document.getElementById('meta').textContent=`${D.track_name||'Unknown track'} · ${D.car_name||'Unknown car'}`;
 
-document.getElementById('meta').textContent=`${D.track_name} · ${D.car_name}`;
 document.getElementById('cards').innerHTML=
- `<div class="card">Laps<b>${D.laps.length}</b></div>`+
- `<div class="card">Best<b>${D.best_time}</b></div>`+
- `<div class="card">Theoretical best<b>${theoreticalBest}</b></div>`+
- `<div class="card">Personal record<b>${D.best_ever?D.best_ever.time:'—'}</b></div>`+
- `<div class="card">Physics<b>${D.physics_samples}</b></div>`+
- `<div class="card">Graphics<b>${D.graphics_samples}</b></div>`;
+ `<div class="card"><span>Laps</span><b>${D.laps?.length||0}</b></div>`+
+ `<div class="card"><span>Session best</span><b>${D.best_time||'—'}</b></div>`+
+ `<div class="card"><span>Theoretical best</span><b>${(() => { const s=D.session_best_sectors||[]; if(s.length!==3||s.some(x=>!x||!(Number(x.time_sec)>0))) return '—'; return fmt(s.reduce((a,x)=>a+Number(x.time_sec),0)); })()}</b></div>`+
+ `<div class="card"><span>Best Ever</span><b>${D.best_ever?.time||'—'}</b></div>`;
 
 const laps=document.getElementById('laps');
-D.laps.forEach((l,i)=>{
+(D.laps||[]).forEach(l=>{
  const tr=document.createElement('tr');
- if(l.session_best)tr.classList.add('new-pr');
  const sectors=l.sectors||[];
- const cell=(s)=>s&&s.session_best?`<td class="sector-cell sector-best">${s.time}</td>`:`<td class="sector-cell">${s?s.time:'—'}</td>`;
- const pr=(D.new_personal_record&&l.session_best)?'<span class="pr-badge">PR</span>':'';
- tr.innerHTML=`<td>${l.lap}</td><td class="${l.session_best?'lap-best':''}">${l.time}${pr}</td><td>${l.delta>=0?'+':''}${l.delta.toFixed(3)}</td>${cell(sectors[0])}${cell(sectors[1])}${cell(sectors[2])}<td>${l.valid?'YES':'NO'}</td>`;
+ const cell=s=>s?.session_best?`<td class="sector-best">${s.time}</td>`:`<td>${s?.time||'—'}</td>`;
+ const pr=(D.new_personal_record&&l.session_best)?'<span class="pr">NEW BEST</span>':'';
+ tr.innerHTML=`<td>${l.lap}</td><td class="${l.session_best?'lap-best':''}">${l.time}${pr}</td><td>${Number(l.delta)>=0?'+':''}${Number(l.delta||0).toFixed(3)}</td>${cell(sectors[0])}${cell(sectors[1])}${cell(sectors[2])}<td>${l.valid?'YES':'NO'}</td>`;
  laps.appendChild(tr);
 });
 
 const ss=document.getElementById('sectorSummary');
-sectorBest.forEach((s,i)=>{if(s)ss.innerHTML+=metric(`S${i+1}`,s.time)});
+(D.session_best_sectors||[]).forEach((s,i)=>{if(s)ss.innerHTML+=metric(`S${i+1}`,s.time||fmt(s.time_sec))});
 if(!ss.innerHTML)ss.innerHTML=metric('Sectors','—');
-const pr=document.getElementById('prSummary');
-pr.innerHTML=metric('Personal record',D.best_ever?D.best_ever.time:'—');
-if(D.new_personal_record)pr.innerHTML+=metric('Status','NEW PR');
-if(D.best_ever)pr.innerHTML+=metric('Source',`${D.best_ever.source_session||'—'} · Lap ${D.best_ever.lap||'—'}`);
 
-const a=document.getElementById('a'),b=document.getElementById('b');
-D.laps.forEach((l,i)=>{a.add(new Option(`Lap ${l.lap} — ${l.time}`,i));b.add(new Option(`Lap ${l.lap} — ${l.time}`,i))});
-if(D.best_idx!==undefined){a.value=D.best_idx;b.value=D.best_idx===0?(D.laps.length>1?1:0):0;}
-function draw(id,key,title,unit){
- const A=D.laps[+a.value],B=D.laps[+b.value];if(!A||!B)return;
- Plotly.react(id,[
-  {x:A.telem.map(x=>x.distance),y:A.telem.map(x=>x[key]),name:`Lap ${A.lap}`,mode:'lines'},
-  {x:B.telem.map(x=>x.distance),y:B.telem.map(x=>x[key]),name:`Lap ${B.lap}`,mode:'lines',line:{dash:'dot'}}
- ],{...base,title,xaxis:{title:'Distance (m)'},yaxis:{title:unit}},{responsive:true});
+const be=document.getElementById('bestEver');
+if(D.best_ever){
+ be.innerHTML=
+   metric('Best Ever',D.best_ever.time||fmt(D.best_ever.time_sec))+
+   metric('Car',D.best_ever.car_name||D.car_name||'—')+
+   metric('Lap',D.best_ever.lap||'—')+
+   metric('Session',D.best_ever.source_session||'—');
+}else{
+ be.innerHTML=metric('Best Ever','—');
 }
-function redraw(){draw('speed','speed','Speed','km/h');draw('gas','gas','Throttle','%');draw('brake','brake','Brake','%');draw('steer','steer','Steering','deg')}
-a.onchange=redraw;b.onchange=redraw;redraw();
 </script>
-</body></html>
+</body>
+</html>
